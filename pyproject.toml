@@ -2,9 +2,11 @@
 name = "RAP"
 version = "0.1.0"
 description = "Toxicology analysis and agent tools"
-authors = ["Your Name <your@email.com>"]
+authors = [
+  { name = "Kyu", email = "kyu@insilica.co" }
+]
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
     "langchain",
     "langchain-openai",
