@@ -1,0 +1,15 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+*.db
+results/
+.nix-profile/
+.nix-defexpr/
+result/
+.cache/
+*.egg-info/
+.DS_Store 
