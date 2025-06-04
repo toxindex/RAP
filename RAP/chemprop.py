@@ -18,22 +18,30 @@ CHEMPROP_PROPERTY_URL = (
     + "us-east-1.elb.amazonaws.com/predict?property_token=5042&"
 )
 
-async def _get_chemprop_request(inchi: str):
+async def _get_chemprop_request(inchi: str, retries: int = 3, delay: float = 2.0):
     """Make a request with the Chemprop API with inchi of the chemical name and return json of properties
 
     Args:
         inchi: InChI of the chemical name
+        retries: Number of times to retry on failure
+        delay: Initial delay between retries (seconds)
     """
     url = CHEMPROP_PROPERTY_URL + "inchi=" + inchi
 
     async with httpx.AsyncClient() as client:
-        try:
-            response = await client.get(url, timeout=500)
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            return "Response from Chemprop API is not valid"
+        for attempt in range(retries):
+            try:
+                response = await client.get(url, timeout=500)
+                response.raise_for_status()
+                return response.json()
+            except Exception as e:
+                print(f"Attempt {attempt + 1} failed: {e}")
+                if attempt < retries - 1:
+                    await asyncio.sleep(delay)
+                    delay *= 2  # Exponential backoff
+                else:
+                    print(f"All {retries} attempts failed.")
+                    return "Chemprop API is temporarily unavailable. Please try again later."
 
 def _format_chemprop_response(response: dict):
     """Use LLM to extract relevant chemical properties from Chemprop JSON."""
