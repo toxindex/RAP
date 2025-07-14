@@ -17,6 +17,29 @@ CHEMPROP_PROPERTY_URL = (
     "http://chemprop-transformer-alb-2126755060."
     + "us-east-1.elb.amazonaws.com/predict?property_token=5042&"
 )
+def _extract_chemical_name(prompt: str) -> str:
+    """Extract the chemical name from a user prompt
+
+    Args:
+        prompt: User prompt that mentions a chemical name
+
+    Returns:
+        The extracted chemical name or the original prompt if extraction fails
+    """
+    # Set up claude LLM
+    extractor_llm = ChatOpenAI(
+        model="gpt-4.1-2025-04-14", temperature=0, api_key=OPENAI_API_KEY
+    )
+    messages = [
+        (
+            "system",
+            "Given a prompt, extract the chemical name. Return only the chemical name.",
+        ),
+        ("human", prompt),
+    ]
+    response = extractor_llm.invoke(messages)
+
+    return response.content
 
 async def _get_chemprop_request(inchi: str, retries: int = 3, delay: float = 2.0):
     """Make a request with the Chemprop API with inchi of the chemical name and return json of properties
@@ -117,6 +140,8 @@ def get_chemprop(query_chemical: str):
     Args:
         query_chemical: Chemical name provided by the user in a prompt
     """
+    # Extract the chemical name from the user's prompt. this is turned off to handle mixtures.
+    # query_chemical = _extract_chemical_name(query_chemical)
     # Get InChI
     inchi = asyncio.run(_get_inchi_pubchem(query_chemical))
     if not inchi:
