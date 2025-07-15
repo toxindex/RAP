@@ -9,6 +9,8 @@ import os
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
+from typing import List, Dict, Any
+import jsonschema
 
 # Try to load .env file if it exists
 try:
@@ -17,22 +19,30 @@ try:
 except ImportError:
     pass  # dotenv is not installed, continue without it
 
+# LLM provider selection (default: gemini)
+llm_provider = os.environ.get("LLM_PROVIDER", "openai").lower()
+
+if llm_provider == "openai":
+    from langchain_openai import ChatOpenAI
+    llm = ChatOpenAI(model="gpt-4.1-nano-2025-04-14")
+    summary_llm = ChatOpenAI(model="gpt-4.1-nano-2025-04-14")
+
+    from agno.models.openai import OpenAIChat
+    agent_model= OpenAIChat("gpt-4.1-2025-04-14")
+else:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
+    summary_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
+ 
+    from agno.models.google import Gemini
+    agent_model = Gemini(id="gemini-2.5-flash")
+
 # Check for API key in environment
-api_key = os.environ.get("OPENAI_API_KEY")
-google_api_key = os.environ.get("GOOGLE_API_KEY")
+cse_api_key = os.environ.get("CSE_API_KEY")
 google_cse_id = os.environ.get("GOOGLE_CSE_ID")
 
-if not api_key:
-    print("\nError: OpenAI API key not found!")
-    print("Please set your OpenAI API key using one of these methods:\n")
-    print("1. Export as an environment variable:")
-    print("   export OPENAI_API_KEY=your_api_key_here")
-    print("\n2. Create a .env file in the project root with:")
-    print("   OPENAI_API_KEY=your_api_key_here")
-    print("\nYou can get an API key from: https://platform.openai.com/api-keys\n")
-    sys.exit(1)
 
-if not google_api_key:
+if not cse_api_key:
     print("\nError: Google API key not found!")
     print("Please set your Google API key using one of these methods:\n")
     print("1. Export as an environment variable:")
@@ -52,7 +62,6 @@ if not google_cse_id:
     print("\nYou can get a CSE ID from: https://cse.google.com/cse/all\n")
     sys.exit(1)
 
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_google_community import GoogleSearchAPIWrapper
@@ -64,7 +73,6 @@ from agno.tools import tool
 from agno.agent import Agent, RunResponse
 from agno.storage.sqlite import SqliteStorage
 from textwrap import dedent
-from agno.models.openai import OpenAIChat
 
 from RAP.chemprop import get_chemprop
 
@@ -81,10 +89,8 @@ class FormattedStreamHandler:
         else:
             print(json.dumps(chunk, indent=2))
 
-# ── LLMs & tools ────────────────────────────────────────────────────────────────
-llm          = ChatOpenAI(model="gpt-4.1-nano-2025-04-14")
-summary_llm  = ChatOpenAI(model="gpt-4.1-nano-2025-04-14")
-search_tool  = GoogleSearchAPIWrapper(google_api_key=google_api_key, google_cse_id=google_cse_id)
+
+search_tool  = GoogleSearchAPIWrapper(google_api_key=cse_api_key, google_cse_id=google_cse_id)
 
 # ── LCEL sub-chains ─────────────────────────────────────────────────────────────
 query_generator_chain = (
@@ -168,7 +174,9 @@ final_report_chain = (
         Do not invent or hallucinate any references. 
         For each claim or data point, cite the most relevant result from the provided list. 
         Here are the available sources:{all_search_results}
-        
+
+        {extra_instruction}
+
         Make sure the report is informative, accurate, and presents a cohesive narrative
         while strictly adhering to the provided schema structure.
 
@@ -189,7 +197,6 @@ def parse_search_results(search_text: str, top_k: int = 5) -> List[Dict[str, str
             if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, "html.parser")
                 title = soup.title.string.strip() if soup.title and soup.title.string else url.split("//")[1].split("/")[0]
-                # Get visible text, join, and take first 300 chars
                 texts = soup.stripped_strings
                 content = " ".join(list(texts))[:1500]
                 if not content:
@@ -323,10 +330,137 @@ def generate_report(state: SearchState) -> SearchState:
             "follow_up_summaries":      state.follow_up_summaries,
             "schema":                   json.dumps(TOXICITY_SCHEMA, indent=2),
             "all_search_results":       all_results_str,
+            "extra_instruction":        "",  # Always provide this argument
         }
     )
     return SearchState(**{**asdict(state), "report": report})
     # return report
+
+def validate_and_revise_references(state: SearchState, max_attempts: int = 5) -> SearchState:
+    all_results = (state.parsed_initial_results or []) + (state.parsed_follow_up_results or [])
+    valid_urls = set(r['url'] for r in all_results if 'url' in r)
+    report_json = state.report
+    if isinstance(report_json, str):
+        try:
+            report_json = json.loads(report_json)
+        except Exception:
+            report_json = {}
+    attempt = 0
+    while attempt < max_attempts:
+        validation = _validate_references(report_json, all_results)
+        if validation["valid"]:
+            break
+        # Regenerate report with only valid URLs
+        all_results_str = "\n".join(
+            f"- {r.get('title', '')}: {r.get('url', '')}" for r in all_results if r.get('url', '') in valid_urls
+        )
+        revised_report = final_report_chain.invoke(
+            {
+                "original_query":           state.original_query,
+                "initial_search_results":   state.initial_search_results,
+                "initial_summaries":        state.initial_summaries,
+                "follow_up_query":          state.follow_up_query,
+                "follow_up_search_results": state.follow_up_search_results,
+                "follow_up_summaries":      state.follow_up_summaries,
+                "schema":                   json.dumps(TOXICITY_SCHEMA, indent=2),
+                "all_search_results":       all_results_str,
+                "extra_instruction":        "You must only use URLs from the provided list as references. Remove or replace any references not in this list. In case of replacement, make sure to include the title of the reference and the URL and run through the validate_references tool to check that all references are valid.",
+                "valid_urls":               list(valid_urls),
+            }
+        )
+        report_json = revised_report if isinstance(revised_report, dict) else json.loads(revised_report)
+        attempt += 1
+    # Add the revision count to the report's metadata
+    if isinstance(report_json, dict):
+        chemtox = report_json.get("chemical_toxicity")
+        if chemtox is not None:
+            meta = chemtox.get("metadata")
+            if meta is None:
+                chemtox["metadata"] = {"reference_revision_attempts": attempt}
+            else:
+                meta["reference_revision_attempts"] = attempt
+    return SearchState(**{**asdict(state), "report": report_json})
+
+def remove_invalid_url_entries(state: SearchState) -> SearchState:
+    """
+    Recursively remove any dict with a 'url' field whose value is invalid, missing, empty, or set to 'N/A', anywhere in the report JSON.
+    """
+    def is_url_valid(url):
+        if not url or not isinstance(url, str) or url.strip() == '' or url.strip().lower().startswith("n/a"):
+            return False
+        try:
+            resp = requests.get(url, timeout=5)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    def clean(obj):
+        if isinstance(obj, dict):
+            # Remove dicts with invalid, missing, or 'N/A' url
+            if 'url' in obj and not is_url_valid(obj['url']):
+                return None
+            # Recursively clean all dict values
+            cleaned = {k: clean(v) for k, v in obj.items()}
+            # Remove keys with None values
+            return {k: v for k, v in cleaned.items() if v is not None}
+        elif isinstance(obj, list):
+            # Clean each item in the list
+            return [item for item in (clean(item) for item in obj) if item is not None]
+        else:
+            return obj
+
+    report_json = state.report
+    if isinstance(report_json, str):
+        try:
+            report_json = json.loads(report_json)
+        except Exception:
+            return state  # Can't parse, return as is
+
+    cleaned = clean(report_json)
+    return SearchState(**{**asdict(state), "report": cleaned})
+
+remove_invalid_url_entries_runnable = RunnableLambda(remove_invalid_url_entries)
+
+def validate_schema(state: SearchState, max_attempts: int = 3) -> SearchState:
+    """
+    Validate the final report against the TOXICITY_SCHEMA. If invalid, attempt to auto-correct by re-prompting the LLM with a strict schema instruction, up to max_attempts.
+    """
+    from RAP.toxicity_schema import TOXICITY_SCHEMA
+    report_json = state.report
+    if isinstance(report_json, str):
+        try:
+            report_json = json.loads(report_json)
+        except Exception:
+            print("[SCHEMA VALIDATION] Could not parse report as JSON.")
+            return state
+    attempt = 0
+    while attempt < max_attempts:
+        try:
+            jsonschema.validate(instance=report_json, schema=TOXICITY_SCHEMA)
+            return SearchState(**{**asdict(state), "report": report_json})
+        except jsonschema.ValidationError as e:
+            print(f"[SCHEMA VALIDATION ERROR] Attempt {attempt+1}: {e}")
+            # Re-prompt LLM to fix the structure
+            fixed_report = final_report_chain.invoke({
+                "original_query": state.original_query,
+                "initial_search_results": state.initial_search_results,
+                "initial_summaries": state.initial_summaries,
+                "follow_up_query": state.follow_up_query,
+                "follow_up_search_results": state.follow_up_search_results,
+                "follow_up_summaries": state.follow_up_summaries,
+                "schema": json.dumps(TOXICITY_SCHEMA, indent=2),
+                "all_search_results": "",  # or pass as needed
+                "extra_instruction": (
+                    "Your previous output did not match the required schema. "
+                    "Here is the schema: {schema}. Please output a valid JSON object conforming to this schema."
+                ),
+            })
+            report_json = fixed_report if isinstance(fixed_report, dict) else json.loads(fixed_report)
+            attempt += 1
+    print("[SCHEMA VALIDATION] Could not auto-correct after max attempts.")
+    return SearchState(**{**asdict(state), "report": report_json})
+
+validate_schema_runnable = RunnableLambda(validate_schema)
 
 # ── assemble the graph ──────────────────────────────────────────────────────────
 graph = StateGraph(SearchState)
@@ -340,6 +474,9 @@ graph.add_node("run_follow_up_search", run_follow_up_search)
 graph.add_node("parse_follow_up",      parse_follow_up)
 graph.add_node("summarize_follow_up",  summarize_follow_up)
 graph.add_node("generate_report",      generate_report)
+graph.add_node("validate_and_revise_references", validate_and_revise_references)
+graph.add_node("remove_invalid_url_entries", remove_invalid_url_entries_runnable)
+graph.add_node("validate_schema", validate_schema_runnable)
 
 # edges – strictly linear in this example
 graph.set_entry_point("preprocess_and_generate_query")
@@ -351,7 +488,10 @@ graph.add_edge("generate_follow_up",  "run_follow_up_search")
 graph.add_edge("run_follow_up_search", "parse_follow_up")
 graph.add_edge("parse_follow_up",     "summarize_follow_up")
 graph.add_edge("summarize_follow_up", "generate_report")
-graph.set_finish_point("generate_report")
+graph.add_edge("generate_report",     "validate_and_revise_references")
+graph.add_edge("validate_and_revise_references", "remove_invalid_url_entries")
+graph.add_edge("remove_invalid_url_entries", "validate_schema")
+graph.set_finish_point("validate_schema")
 
 # ── compile an executor ─────────────────────────────────────────────────────────
 executor = graph.compile()
@@ -361,22 +501,12 @@ def invoke_deepsearch(query: str):
     """
     Use this tool to perform a deep search for information.
     This tool is almost always useful when the user asks a question.
-
-    Args:
+        Args:
         query (str): The user's question.
     """
     return executor.invoke({"original_query": query})
-
-@tool(description="Validate that all references in the final report are present in the actual search results. Returns a list of missing or hallucinated references, or confirms all are valid.")
-def validate_references(report: dict, search_results: list):
-    """
-    Checks that all URLs in the report are present in the search results.
-    Args:
-        report (dict): The final report as a dict.
-        search_results (list): List of dicts, each with a 'url' key.
-    Returns:
-        dict: { "missing": [...], "valid": True/False }
-    """
+ 
+def _validate_references(report: dict, search_results: List[Dict[str, Any]]):
     def extract_urls_from_search_results(search_results):
         return set(r['url'] for r in search_results if 'url' in r)
 
@@ -403,9 +533,14 @@ def validate_references(report: dict, search_results: list):
         "valid": len(missing) == 0
     }
 
+# Tool wrapper for agent use
+@tool(description="Validate that all references in the final report are present in the actual search results. Returns a list of missing or hallucinated references, or confirms all are valid.")
+def validate_references(report: dict, search_results: List[Dict[str, Any]]):
+    return _validate_references(report, search_results)
+
 deeptox_agent = Agent(
     name="Deep Toxicology Agent",
-    model=OpenAIChat(id="gpt-4.1-2025-04-14"),
+    model=agent_model,
     tools=[get_chemprop, invoke_deepsearch, validate_references],
     # sets “identity” of the agent.
     description=dedent("""

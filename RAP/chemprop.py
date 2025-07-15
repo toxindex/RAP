@@ -129,7 +129,7 @@ async def _get_inchi_pubchem(query_chemical: str):
             best = records[0][0]
             return best.inchi
         
-        except Exception as ee:
+        except Exception as e:
             print(f"An error occurred: {e}")
             return f"Error getting InChI for '{query_chemical}'"
 

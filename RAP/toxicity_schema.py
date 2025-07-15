@@ -138,7 +138,8 @@ TOXICITY_SCHEMA_FLEXIBLE = {
                             "required": ["overall_score", "confidence_level"]
                         },
                         "last_updated": { "type": "string", "format": "date-time" },
-                        "data_sources": { "type": "array", "items": { "type": "string" } }
+                        "data_sources": { "type": "array", "items": { "type": "string" } },
+                        "reference_revision_attempts": { "type": "integer" }
                     },
                     "required": ["data_completeness", "last_updated"]
                 },
@@ -269,7 +270,7 @@ TOXICITY_SCHEMA_FLEXIBLE = {
                                     "contribution": { "type": "string" },
                                     "confidence": { "type": "string", "enum": ["high", "medium", "low"] }
                                 },
-                                "required": ["title", "contribution"]
+                                "required": ["title", "url", "contribution"]
                             }
                         },
                         "interpretation": { "type": "string" },
