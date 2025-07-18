@@ -26,51 +26,10 @@ dependencies = [
     "sqlalchemy",
     "numpy",
     "pandas",
-    "openai"
-    "google-genai"
-    "langchain-google-genai"
-    "bs4"
+    "openai",
+    "google-genai",
+    "langchain-google-genai",
+    "bs4",
     "jsonschema"
 ]
 
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src"]
-
-[tool.rye]
-managed = true
-dev-dependencies = [
-    "pytest",
-    "black",
-    "isort",
-    "mypy",
-]
-
-[tool.black]
-line-length = 88
-target-version = ["py39"]
-
-[tool.isort]
-profile = "black"
-multi_line_output = 3
-
-[tool.poetry]
-name = "rap"
-version = "0.1.0"
-description = "RAP development environment"
-authors = ["Your Name <your.email@example.com>"]
-
-[tool.poetry.dependencies]
-python = "^3.9"
-python-dotenv = "*"
-requests = "*"
-aiohttp = "*"
-typing-extensions = "*"
-langchain-openai = "*"
-langchain-core = "*"
-langchain-community = "*"
-langgraph = "*"
-agno = "*"
